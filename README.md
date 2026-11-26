@@ -1,10 +1,10 @@
-# EmoMM-Sequence
+# MoodMusic-Playlist
 
 当前范围包括原始数据读取、特征提取、S/A/P、TextVA、MusicVA 训练，以及基于现有权重的歌单候选对照和预算约束搜索。
 
 ## 歌单候选对照
 
-在 `msmmr` 环境中，从项目目录运行。需要先启动本地 Ollama，EmoMM-Sequence 使用本项目内置的 `qwen3:4b` 需求解析器。每条请求只输入自然语言和歌曲数。
+在 `msmmr` 环境中，从项目目录运行。需要先启动本地 Ollama，MoodMusic-Playlist 使用本项目内置的 `qwen3:4b` 需求解析器。每条请求只输入自然语言和歌曲数。
 
 ```powershell
 python -B scripts/compare_playlists.py --text "我现在很烦，想慢慢平静下来，最好是钢琴。" --tracks 5 --budget 20

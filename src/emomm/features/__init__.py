@@ -1,1 +1,1 @@
-"""EmoMM-MusicRec."""
+"""MoodMusic-Playlist."""

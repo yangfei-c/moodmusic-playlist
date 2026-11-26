@@ -1,4 +1,4 @@
-"""Shared paths and small I/O helpers for EmoMM-MusicRec."""
+"""Shared paths and small I/O helpers for MoodMusic-Playlist."""
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
