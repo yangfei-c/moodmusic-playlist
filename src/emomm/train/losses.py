@@ -1,6 +1,7 @@
 """Current contrastive and semantic-distillation objectives."""
 from __future__ import annotations
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 def _cosine_logits_fp32(text, music, scale):
@@ -111,19 +112,6 @@ def symmetric_similarity_distillation_loss(
         F.log_softmax(student_logits.T, dim=1), teacher_m2t, reduction="batchmean"
     )
     return 0.5 * (text_loss + music_loss)
-
-from torch import nn
-from ..models.music_va import QUANTILE_LEVELS
-
-def pinball_loss(quantiles: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """Mean pinball loss across songs, both VA axes, and three quantiles."""
-    if quantiles.ndim != 3 or quantiles.shape[1:] != (2, 3):
-        raise ValueError(f"quantiles must have shape [N,2,3], got {tuple(quantiles.shape)}")
-    if targets.shape != quantiles.shape[:2]:
-        raise ValueError(f"targets must have shape [N,2], got {tuple(targets.shape)}")
-    levels = quantiles.new_tensor(QUANTILE_LEVELS)
-    residual = targets.unsqueeze(-1) - quantiles
-    return torch.maximum(levels * residual, (levels - 1.0) * residual).mean()
 
 
 class VALoss(nn.Module):

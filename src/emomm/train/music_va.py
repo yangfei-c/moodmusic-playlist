@@ -1,14 +1,14 @@
-"""Train fresh ordered music VA quantiles on the supplied train/validation splits."""
+"""Train music VA point regression on the supplied train/validation splits."""
 import csv
 from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from ..data import read_features
-from ..models.music_va import VAQuantileRegressor
+from ..models.music_va import MusicVARegressor
 from .. import require_device
 from . import check_identity_splits, compute_va_metrics, set_seed, sha256, state_sha256, write_json
-from .losses import pinball_loss
+from .losses import VALoss
 
 
 def prepare_data(paths, excluded=None):
@@ -25,7 +25,7 @@ def prepare_data(paths, excluded=None):
         if not np.isfinite(targets).all() or np.any(np.abs(targets) > 1):
             raise ValueError(f"{source} VA 标签应为 [-1,1]")
         blocks.append(dict(features=values["audio_embeddings"].astype(np.float32),
-                           targets=(targets + 1) / 2, splits=values["splits"],
+                           targets=targets, splits=values["splits"],
                            ids=values["global_identities"], sources=np.repeat(source, len(targets))))
     result = {k: np.concatenate([b[k] for b in blocks]) for k in blocks[0]}
     check_identity_splits(result["ids"], result["splits"], "MusicVA")
@@ -43,15 +43,13 @@ def predict(model, features, device):
                            for i in range(0, len(features), 512)])
 
 
-def validation_metrics(quantiles, targets, sources):
+def validation_metrics(predictions, targets, sources):
     result = {}
     for source in sorted(set(sources)):
         mask = sources == source
-        q, y = quantiles[mask], targets[mask]
-        result[source] = {"pinball": float(pinball_loss(torch.from_numpy(q), torch.from_numpy(y))),
-                          "n_songs": int(mask.sum()),
-                          "median_va": compute_va_metrics(2 * q[:, :, 1] - 1, 2 * y - 1)}
-    result["source_equal_pinball"] = float(np.mean([v["pinball"] for v in result.values()]))
+        result[source] = {"n_songs": int(mask.sum()),
+                          "va": compute_va_metrics(predictions[mask], targets[mask])}
+    result["source_equal_mae"] = float(np.mean([record["va"]["mean_mae"] for record in result.values()]))
     return result
 
 
@@ -60,9 +58,10 @@ def train_seed(config, data, seed, output):
     output.mkdir(parents=True, exist_ok=False)
     set_seed(seed)
     device = require_device(config["device"])
-    model = VAQuantileRegressor(**config["model"]).to(device)
+    model = MusicVARegressor(**config["model"]).to(device)
     initial = state_sha256(model)
     cfg = config["training"]
+    criterion = VALoss(beta=cfg["huber_beta"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
     train, validation = data["splits"] == "train", data["splits"] == "validation"
     dataset = TensorDataset(torch.from_numpy(data["features"][train]), torch.from_numpy(data["targets"][train]))
@@ -78,7 +77,7 @@ def train_seed(config, data, seed, output):
         total, count = 0.0, 0
         for x, y in loader:
             optimizer.zero_grad(set_to_none=True)
-            loss = pinball_loss(model(x.to(device)), y.to(device))
+            loss = criterion(model(x.to(device)), y.to(device))
             if not torch.isfinite(loss):
                 raise FloatingPointError("MusicVA 损失含非有限值")
             loss.backward()
@@ -88,8 +87,8 @@ def train_seed(config, data, seed, output):
             count += len(x)
         metrics = validation_metrics(predict(model, data["features"][validation], device),
                                      data["targets"][validation], data["sources"][validation])
-        score = metrics["source_equal_pinball"]
-        history.append(dict(epoch=epoch, train_pinball=total / count, validation_source_equal_pinball=score))
+        score = metrics["source_equal_mae"]
+        history.append(dict(epoch=epoch, train_smooth_l1=total / count, validation_source_equal_mae=score))
         with (output / "history.csv").open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(history[0]))
             writer.writeheader()
@@ -98,7 +97,7 @@ def train_seed(config, data, seed, output):
             best, best_epoch = score, epoch
             torch.save(dict(model=model.state_dict(), model_config=config["model"], seed=seed,
                             epoch=epoch, run_id=config["run_id"], feature_id=config["feature_id"],
-                            selection_score=score, target_scale=[0, 1], quantile_levels=[0.05, 0.5, 0.95]), output / "best.pt")
+                            selection_score=score, target_scale=[-1, 1]), output / "best.pt")
         if score < reference - cfg["early_stopping_min_delta"]:
             reference, bad = score, 0
         else:
@@ -114,6 +113,6 @@ def train_seed(config, data, seed, output):
                   results={"validation": validation_metrics(predict(model, data["features"][validation], device),
                            data["targets"][validation], data["sources"][validation])},
                   initialization="fresh_random", initial_state_sha256=initial, final_state_sha256=final,
-                  checkpoint_sha256=sha256(output / "best.pt"), calibration_fitted=False, test_used=False)
+                  checkpoint_sha256=sha256(output / "best.pt"), test_used=False)
     write_json(output / "metrics.json", result)
     return result

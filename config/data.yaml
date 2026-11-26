@@ -4,7 +4,7 @@ local_files_only: true
 feature_id: auto
 datasets: [text_emobank, music_deam, music_pmemo, pairs_merge, mtg_music, mtg_tags, pairs_song_describer]
 clamp3:
-  checkpoint: D:/AAAAAAAAAA_emotion/Code/EmoMM-Sequence/model_weights/clamp3.pt
+  checkpoint: model_weights/clamp3.pt
   checkpoint_sha256: 5033f868e3977be3945ee416b5a1718d5589a173c7ba8982231d8c94a6441d80
   text_model: FacebookAI/xlm-roberta-base
   embedding_dim: 768

@@ -178,7 +178,7 @@ def execute(config, data_config, stages, selected_id, feature_id, folder, hashes
             write_json(target / "aggregate.json", aggregate)
             selection["models"][name] = dict(seed=chosen["seed"], checkpoint=checkpoint.relative_to(run_root).as_posix(),
                 sha256=sha256(checkpoint), validation_score=chosen["best_validation_score"],
-                criterion={"three_branch": "factorwise_balanced_retrieval_max", "text_va": "mean_ccc_max", "music_va": "source_equal_pinball_min"}[name])
+                criterion={"three_branch": "factorwise_balanced_retrieval_max", "text_va": "mean_ccc_max", "music_va": "source_equal_mae_min"}[name])
             if name == "three_branch":
                 selection["models"][name]["method"] = "residual_distill"
                 status["retrieval_comparison"] = "three_branch/comparison.json"

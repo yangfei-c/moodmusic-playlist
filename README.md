@@ -1,6 +1,32 @@
-# EmoMM-MusicRec
+# EmoMM-Sequence
 
-当前范围：读取原始数据、提取特征、训练 S/A/P 三分支、TextVA、MusicVA。
+当前范围包括原始数据读取、特征提取、S/A/P、TextVA、MusicVA 训练，以及基于现有权重的歌单候选对照和预算约束搜索。
+
+## 歌单候选对照
+
+在 `msmmr` 环境中，从项目目录运行。需要先启动本地 Ollama，EmoMM-Sequence 使用本项目内置的 `qwen3:4b` 需求解析器。每条请求只输入自然语言和歌曲数。
+
+```powershell
+python -B scripts/compare_playlists.py --text "我现在很烦，想慢慢平静下来，最好是钢琴。" --tracks 5 --budget 20
+python -B scripts/compare_playlists.py --pilot-requests 12 --tracks 5 --budget 20
+```
+
+批量模式从本地 MusicRecoIntent 抽原句，并用 EmoBank 验证文本自动组合带情绪起终点的请求。两组均使用 MTG 验证曲库、相同位置得分、候选数和 beam 排序器。单曲组按各曲在所有位置中的最佳分数选池，位置组轮流从各位置选池。结果以 JSON 输出到标准输出，包括歌单、各位置误差、过渡误差和位置组新找回的歌曲。先导结果采用模型预测坐标与同一个目标函数，适合检查两种选池规则对该目标的影响。
+
+首版用线性情绪轨迹，排除与参考条件分别以软冲突和语义分数进入目标。解析器和默认模型摘要定义在 `src/emomm/playlist_inputs.py`。复现实验使用其他已安装版本时，可通过 `--parser-digest` 明确固定该次运行的摘要。
+
+## 学习前缀搜索
+
+在同一个位置覆盖候选池内，搜索状态保存已排歌曲和累计得分。允许部分重复的动态规划给出未来得分上界，再用一步合法扩展收紧上界。训练用小候选池上的精确子集动态规划计算合法最优续排，岭回归学习「上界减去真实最优续排」的差值。模型修正待扩展状态的优先级。只有可验证的上界参与剪枝，预算耗尽时仍能报告候选池内的最优性差距上界。
+
+下列训练命令使用 MTG 训练曲库、EmoBank 训练文本向量和标签提示向量自动构造请求，不依赖 Ollama。验证使用独立曲库、不同文本划分及该搜索模型训练未用的流派条件。两组使用相同的初始贪心解和前缀扩展上限。
+
+```powershell
+python -B scripts/compare_playlists.py --prefix-pilot 96 --eval-requests 48 --tracks 5 --budget 20 --expansions 24 --save-search-checkpoint runs/prefix_search.npz
+python -B scripts/compare_playlists.py --text "我现在很烦，想慢慢平静下来，最好是钢琴。" --tracks 10 --budget 60 --expansions 24 --search-checkpoint runs/prefix_search.npz
+```
+
+实际输入可用 `--prefix-search` 启用纯上界搜索，用 `--search-checkpoint` 同时比较学习优先级。`--search-ms` 可再限制搜索阶段时长，时限在每次扩展之间检查。`prefix_search` 输出完整歌单、已扩展前缀数、已评估动作数、当前上界和差距。上界仅针对当前候选池、当前歌曲得分和全局歌曲去重约束。训练命令可以省略保存参数，仅输出评估结果。保存参数要求目标文件不存在。
 
 ## 运行
 
@@ -40,7 +66,7 @@ python scripts/train.py
 长时间音频提取会产生本批次的 `.partial.npy` 断点文件；相应 NPZ 完成后自动移除这些临时文件。
 各训练模型均随机初始化；冻结 CLaMP3 对照组不训练。TextVA 与 MusicVA 都直接使用冻结 CLaMP3 特征，分别训练自己的 VA 头，不经过 A 分支。
 原始数据、公开预训练 CLaMP3/MERT/XLM-R 底座属于输入；旧项目生成的特征、训练权重、曲库和结果均不作为输入。
-目前 CLaMP3 的公开预训练文件通过绝对路径引用旧目录中的 `model_weights/clamp3.pt`，其余项目源码不依赖旧项目。
+CLaMP3 的公开预训练权重位于本项目的 `model_weights/clamp3.pt`。该路径以项目根目录解析，预训练权重保存在本地。
 
 ## 数据与训练路线
 
@@ -64,9 +90,9 @@ Song Describer 与 MTG 重叠的歌曲复用同一个新提取批次内的音频
 - **增强评估口径**：所有四组都使用原始单提示进行主评估和选模；最终最佳权重额外评估未参与训练的 `Find me a track described as ...` 模板，只报告模板改写鲁棒性，不参与选 epoch/seed，也不等同于真实用户查询或未见标签评估。主指标为 A/P 各自的 nDCG@10、mAP，按相同种子报告均值、样本标准差、配对差值和提升种子数。S 的训练方法和两项 VA 的代码/参数保持原方案；由于三分支联合梯度裁剪及早停，两个独立拟合组的 S 权重不保证逐项相同。
 - **歌词片段**：仅从 MERGE 训练集原歌词生成，少于 64 词跳过；从最多五个连续窗口中，根据与同批次音频、全文的平均余弦相似度选出最多两个。窗口通常 96 词，较短歌词取 75%。全文与片段保留相同歌曲身份，按多正样本训练；跨划分重复音频的原样本若被排除，其片段一起排除。验证／测试不生成片段。三组 Adapter 训练使用完全相同的片段。
 - **TextVA**：直接读取 `text_emobank.npz` 的冻结 CLaMP3 文本向量，训练 `Linear(768,2) + tanh`，损失为 SmoothL1 + CCC。EmoBank 1–5 标签映射为 [-1,1]。不读取、训练或依赖三分支 Adapter。
-- **MusicVA**：冻结 CLaMP3 音频特征输入量化回归头，输出两轴的 q05/q50/q95，使用 pinball 损失。DEAM/PMEmo 本地 1–9 标签先统一到 [-1,1]，训练时转为 [0,1]。本阶段按源数据完整 validation 选模，尚不生成校准区间。
+- **MusicVA**：冻结 CLaMP3 音频特征输入点回归头，直接输出 [-1,1] 内的效价和唤醒度，使用 Smooth L1 损失。DEAM/PMEmo 本地 1–9 标签统一到 [-1,1]。
 
-默认 seed 为 42、43、44。选模只用验证集：S/A/P 取验证检索指标最大值，TextVA 取平均 CCC 最大值，MusicVA 取各数据源等权 pinball 最小值。当前训练脚本不运行 test 评估。
+默认 seed 为 42、43、44。选模只用验证集：S/A/P 取验证检索指标最大值，TextVA 取平均 CCC 最大值，MusicVA 取各数据源等权 MAE 最小值。当前训练脚本不运行 test 评估。
 冻结 CLaMP3 对照不涉及随机训练，只评估一次，不重复三次制造标准差；三组 Adapter 分别使用相同三个种子从头训练，汇总为均值与样本标准差（ddof=1）。四组的检索样本、候选曲库、查询标签和重复音频排除规则相同。四组对比仅针对 S/A/P 检索任务，VA 模型单独训练与报告，冻结编码器自身不能直接输出 VA。
 新实现不加载旧数据增强文件。重训结果不承诺复现旧数值。
 歌词片段增强和语义保持作为既有训练手段使用，不单独作为项目的方法创新。
